@@ -119,7 +119,8 @@ Supplicant          NAS                    RADIUS Server
 
 ## PoC: Building a RADIUS Lab
 
-The PoC uses **FreeRADIUS** (server) + a **Python RADIUS client** via the `pyrad` library.
+The PoC uses **FreeRADIUS** (server) + two pure-Python clients — **no pip, no
+third-party packages**, stdlib only.
 
 ### Architecture
 
@@ -132,21 +133,15 @@ The PoC uses **FreeRADIUS** (server) + a **Python RADIUS client** via the `pyrad
 ### Option A: Docker-based (Recommended)
 
 ```bash
-# Pull a ready-made FreeRADIUS image
-docker run -d --name freeradius \
-  -p 1812:1812/udp \
-  -p 1813:1813/udp \
-  freeradius/freeradius-server:latest
-
-# Install the Python RADIUS client library
-pip install pyrad
+# docker-compose.yml handles everything — just run:
+docker compose up -d
 ```
 
 ### Option B: Native Install (Debian/Ubuntu)
 
 ```bash
 sudo apt-get install freeradius
-pip install pyrad
+# No pip install needed — clients use Python stdlib only
 ```
 
 ---
@@ -188,228 +183,245 @@ docker exec -it freeradius freeradius -X
 
 ## Python RADIUS Client (NAS Simulator)
 
+Two scripts are provided — both use **Python stdlib only** (no pip required).
+
+| Script | Purpose |
+|--------|---------|
+| `radius_client.py` | Full demo — 5 auth tests + accounting start/stop, human-readable output |
+| `radius_raw.py` | Wire-level — hexdump + field-by-field annotation of every byte |
+
 ### `radius_client.py`
 
 ```python
 #!/usr/bin/env python3
 """
 RADIUS PoC Client — simulates a NAS sending Access-Request packets.
-Requires: pip install pyrad
+Pure stdlib — no pip install required.
+
+Usage:
+    python3 radius_client.py                          # full demo
+    python3 radius_client.py --user alice --password password123
 """
 
-import pyrad.packet
-from pyrad.client import Client
-from pyrad.dictionary import Dictionary
-import pyrad.dictionary
-import os
+import argparse, socket, struct, hashlib, os, sys
 
-# ── Configuration ──────────────────────────────────────────────
-RADIUS_HOST   = "127.0.0.1"
-RADIUS_PORT   = 1812
-SHARED_SECRET = b"testing123"          # must match clients.conf
+RADIUS_HOST    = "127.0.0.1"
+AUTH_PORT      = 1812
+ACCT_PORT      = 1813
+SHARED_SECRET  = b"testing123"
 NAS_IDENTIFIER = "poc-nas"
 
-# pyrad needs a RADIUS dictionary file; use the bundled one or provide a path
-DICT_PATH = "/usr/share/freeradius/dictionary"  # adjust if needed
+# Packet codes
+ACCESS_REQUEST = 1;  ACCESS_ACCEPT = 2
+ACCESS_REJECT  = 3;  ACCT_REQUEST  = 4;  ACCT_RESPONSE = 5
+
+# AVP type numbers
+ATTR = {
+    "User-Name": 1, "User-Password": 2, "NAS-IP-Address": 4,
+    "NAS-Port": 5,  "Reply-Message": 18, "NAS-Identifier": 32,
+    "Acct-Status-Type": 40, "Acct-Session-Id": 44,
+    "Framed-IP-Address": 8, "Tunnel-Private-Group-Id": 81,
+}
 
 
-def authenticate(username: str, password: str) -> str:
-    """
-    Send an Access-Request and return 'ACCEPT', 'REJECT', or 'CHALLENGE'.
-    """
-    try:
-        dictionary = Dictionary(DICT_PATH)
-    except FileNotFoundError:
-        # Minimal inline dictionary for the PoC
-        dictionary = Dictionary()
+def encode_attr(t, v):
+    return bytes([t, 2 + len(v)]) + v
 
-    srv = Client(
-        server=RADIUS_HOST,
-        authport=RADIUS_PORT,
-        secret=SHARED_SECRET,
-        dict=dictionary,
-    )
-    srv.timeout = 5
-    srv.retries = 1
 
-    # Build Access-Request
-    req = srv.CreateAuthPacket(
-        code=pyrad.packet.AccessRequest,
-        User_Name=username,
-        NAS_Identifier=NAS_IDENTIFIER,
-    )
-    req["User-Password"] = req.PwCrypt(password)   # encrypt per RFC 2865
-
-    print(f"\n[>] Sending Access-Request for user='{username}'")
-    print(f"    Server : {RADIUS_HOST}:{RADIUS_PORT}")
-    print(f"    Secret : {SHARED_SECRET.decode()}")
-
-    reply = srv.SendPacket(req)
-
-    code_map = {
-        pyrad.packet.AccessAccept:    "ACCEPT",
-        pyrad.packet.AccessReject:    "REJECT",
-        pyrad.packet.AccessChallenge: "CHALLENGE",
-    }
-    result = code_map.get(reply.code, f"UNKNOWN ({reply.code})")
-
-    print(f"[<] Response code : {reply.code} → {result}")
-
-    if "Reply-Message" in reply:
-        print(f"    Reply-Message : {reply['Reply-Message'][0]}")
-
-    if result == "ACCEPT":
-        # Print any authorization attributes returned
-        for attr in ("Framed-IP-Address", "Tunnel-Private-Group-Id", "Class"):
-            if attr in reply:
-                print(f"    {attr} : {reply[attr][0]}")
-
+def encrypt_password(password, secret, authenticator):
+    """RFC 2865 §5.2 — XOR with MD5(secret + last_block)."""
+    p = password.encode()
+    p += b"\x00" * ((16 - len(p) % 16) % 16)
+    result, last = b"", authenticator
+    for i in range(0, len(p), 16):
+        digest = hashlib.md5(secret + last).digest()
+        block  = bytes(a ^ b for a, b in zip(p[i:i+16], digest))
+        result += block; last = block
     return result
 
 
-def send_accounting(username: str, session_id: str, status_type: int = 1):
-    """
-    Send an Accounting-Request (Start=1, Stop=2, Interim=3).
-    """
+def authenticate(username, password):
+    authenticator = os.urandom(16)
+    attrs  = encode_attr(ATTR["User-Name"],      username.encode())
+    attrs += encode_attr(ATTR["User-Password"],  encrypt_password(password, SHARED_SECRET, authenticator))
+    attrs += encode_attr(ATTR["NAS-IP-Address"], socket.inet_aton("127.0.0.1"))
+    attrs += encode_attr(ATTR["NAS-Port"],       (0).to_bytes(4, "big"))
+    attrs += encode_attr(ATTR["NAS-Identifier"], NAS_IDENTIFIER.encode())
+
+    pkt = struct.pack(">BBH16s", ACCESS_REQUEST, os.getrandbits(8),
+                      20 + len(attrs), authenticator) + attrs
+
+    print(f"\n[>] Access-Request  user='{username}'  ({len(pkt)} bytes)")
     try:
-        dictionary = Dictionary(DICT_PATH)
-    except FileNotFoundError:
-        dictionary = Dictionary()
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(5)
+        sock.sendto(pkt, (RADIUS_HOST, AUTH_PORT))
+        reply, _ = sock.recvfrom(4096)
+    except socket.timeout:
+        print("    [!] Timeout — is FreeRADIUS running?"); return "TIMEOUT"
+    finally:
+        sock.close()
 
-    srv = Client(
-        server=RADIUS_HOST,
-        acctport=1813,
-        secret=SHARED_SECRET,
-        dict=dictionary,
-    )
+    code = reply[0]
+    name = {ACCESS_ACCEPT: "Access-Accept ✓", ACCESS_REJECT: "Access-Reject ✗"}.get(code, f"code={code}")
+    print(f"[<] {name}")
 
-    req = srv.CreateAcctPacket(User_Name=username)
-    req["Acct-Status-Type"]  = status_type
-    req["Acct-Session-Id"]   = session_id
-    req["NAS-Identifier"]    = NAS_IDENTIFIER
+    # Print reply attributes
+    pos, length = 20, struct.unpack(">H", reply[2:4])[0]
+    while pos < length:
+        t, ln, val = reply[pos], reply[pos+1], reply[pos+2:pos+reply[pos+1]]
+        if t == ATTR["Reply-Message"]:
+            print(f"    Reply-Message          = {val.decode()}")
+        elif t == ATTR["Framed-IP-Address"]:
+            print(f"    Framed-IP-Address      = {socket.inet_ntoa(val)}")
+        elif t == ATTR["Tunnel-Private-Group-Id"]:
+            print(f"    Tunnel-Private-Group-Id= {val.decode()}")
+        pos += ln
+    return name
 
-    status_name = {1: "Start", 2: "Stop", 3: "Interim-Update"}.get(status_type, str(status_type))
-    print(f"\n[>] Sending Accounting-Request ({status_name}) for user='{username}'")
 
-    reply = srv.SendPacket(req)
-    print(f"[<] Accounting-Response code : {reply.code}")
+def send_accounting(username, session_id, status):
+    attrs  = encode_attr(ATTR["User-Name"],        username.encode())
+    attrs += encode_attr(ATTR["NAS-Identifier"],   NAS_IDENTIFIER.encode())
+    attrs += encode_attr(ATTR["Acct-Status-Type"], status.to_bytes(4, "big"))
+    attrs += encode_attr(ATTR["Acct-Session-Id"],  session_id.encode())
+    attrs += encode_attr(ATTR["NAS-IP-Address"],   socket.inet_aton("127.0.0.1"))
+
+    pkt = struct.pack(">BBH16s", 4, os.getrandbits(8),
+                      20 + len(attrs), os.urandom(16)) + attrs
+    label = {1:"Start", 2:"Stop", 3:"Interim-Update"}.get(status, str(status))
+    print(f"\n[>] Accounting-Request ({label})  user='{username}'")
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(5)
+        sock.sendto(pkt, (RADIUS_HOST, ACCT_PORT))
+        reply, _ = sock.recvfrom(4096)
+        print(f"[<] Accounting-Response ✓  code={reply[0]}")
+    except socket.timeout:
+        print("    [!] Timeout")
+    finally:
+        sock.close()
 
 
 if __name__ == "__main__":
-    print("=" * 50)
-    print("  RADIUS PoC — Authentication Demo")
-    print("=" * 50)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--user"); parser.add_argument("--password")
+    args = parser.parse_args()
 
-    # Test 1: valid credentials
-    authenticate("alice", "password123")
+    if args.user:
+        authenticate(args.user, args.password or "")
+    else:
+        for user, pwd, desc in [
+            ("alice", "password123",  "valid credentials"),
+            ("bob",   "bobsecret",    "valid credentials (VLAN policy)"),
+            ("admin", "admin@radius", "valid credentials (admin)"),
+            ("alice", "wrongpass",    "wrong password"),
+            ("ghost", "noexist",      "unknown user"),
+        ]:
+            print(f"\n  >> {desc}")
+            authenticate(user, pwd)
 
-    # Test 2: wrong password
-    authenticate("alice", "wrongpassword")
-
-    # Test 3: unknown user
-    authenticate("mallory", "hacker")
-
-    # Test 4: accounting (optional — comment out if server not running acct)
-    # send_accounting("alice", session_id="sess-001", status_type=1)  # Start
-    # send_accounting("alice", session_id="sess-001", status_type=2)  # Stop
+        send_accounting("alice", "sess-abc123", status=1)  # Start
+        send_accounting("alice", "sess-abc123", status=2)  # Stop
 ```
 
 ---
 
-## Raw Packet PoC (no library)
+## Wire-Level Inspector
 
-To understand the wire format at a byte level:
+`radius_raw.py` sends one Access-Request for `alice` and prints a **hex dump +
+field-by-field annotation** of both the outgoing and incoming packets — useful
+for understanding the exact wire format.
 
 ### `radius_raw.py`
 
 ```python
 #!/usr/bin/env python3
 """
-Low-level RADIUS Access-Request — hand-crafted UDP packet.
-Educational only; does NOT handle the full RFC correctly.
+RADIUS Raw Packet Inspector — hand-crafted UDP packet with hexdump output.
+Pure stdlib. Educational — shows every byte on the wire.
 """
 
-import socket
-import os
-import struct
-import hashlib
+import socket, struct, hashlib, os
+
+SECRET      = b"testing123"
+RADIUS_HOST = "127.0.0.1"
+AUTH_PORT   = 1812
 
 
-def encrypt_password(password: str, secret: bytes, authenticator: bytes) -> bytes:
-    """RFC 2865 §5.2 password obfuscation."""
-    password_bytes = password.encode("utf-8")
-    # Pad to 16-byte boundary
-    pad_len = (16 - len(password_bytes) % 16) % 16
-    password_bytes += b"\x00" * pad_len
-
-    result = b""
-    last = authenticator
-    for i in range(0, len(password_bytes), 16):
+def encrypt_password(password, secret, authenticator):
+    p = password.encode()
+    p += b"\x00" * ((16 - len(p) % 16) % 16)
+    result, last = b"", authenticator
+    for i in range(0, len(p), 16):
         digest = hashlib.md5(secret + last).digest()
-        chunk = bytes(a ^ b for a, b in zip(password_bytes[i:i+16], digest))
-        result += chunk
-        last = chunk
+        block  = bytes(a ^ b for a, b in zip(p[i:i+16], digest))
+        result += block; last = block
     return result
 
 
-def build_access_request(username: str, password: str, secret: bytes) -> bytes:
-    identifier    = 1
-    authenticator = os.urandom(16)
-
-    # Attribute: User-Name (type=1)
-    uname_bytes = username.encode()
-    attr_username = bytes([1, 2 + len(uname_bytes)]) + uname_bytes
-
-    # Attribute: User-Password (type=2)
-    enc_pass = encrypt_password(password, secret, authenticator)
-    attr_password = bytes([2, 2 + len(enc_pass)]) + enc_pass
-
-    # Attribute: NAS-IP-Address (type=4) — 127.0.0.1
-    attr_nas_ip = bytes([4, 6]) + socket.inet_aton("127.0.0.1")
-
-    # Attribute: NAS-Port (type=5)
-    attr_nas_port = bytes([5, 6]) + struct.pack(">I", 0)
-
-    attributes = attr_username + attr_password + attr_nas_ip + attr_nas_port
-
-    # Header: Code=1, ID, Length (2 bytes), Authenticator (16 bytes)
-    length = 20 + len(attributes)
-    header = struct.pack(">BBH16s", 1, identifier, length, authenticator)
-
-    return header + attributes
+def hexdump(data, indent=4):
+    for i in range(0, len(data), 16):
+        chunk  = data[i:i+16]
+        hex_   = " ".join(f"{b:02x}" for b in chunk)
+        ascii_ = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
+        print(f"{' '*indent}{i:04x}  {hex_:<48}  |{ascii_}|")
 
 
-def parse_response(data: bytes):
-    code, identifier, length = struct.unpack(">BBH", data[:4])
-    authenticator = data[4:20]
-    code_map = {2: "Access-Accept", 3: "Access-Reject", 11: "Access-Challenge"}
-    print(f"Response code: {code} ({code_map.get(code, 'Unknown')})")
+def annotate(data):
+    code, id_, length = data[0], data[1], struct.unpack(">H", data[2:4])[0]
+    names = {1:"Access-Request", 2:"Access-Accept",
+             3:"Access-Reject",  11:"Access-Challenge"}
+    attr_names = {1:"User-Name", 2:"User-Password", 4:"NAS-IP-Address",
+                  5:"NAS-Port",  18:"Reply-Message", 32:"NAS-Identifier"}
 
-    # Parse attributes
+    print(f"  ┌─ Code         : {code:3d}  ({names.get(code, '?')})")
+    print(f"  ├─ Identifier   : {id_}")
+    print(f"  ├─ Length       : {length}")
+    print(f"  ├─ Authenticator: {data[4:20].hex()}")
+    print(f"  └─ Attributes:")
+
     pos = 20
     while pos < length:
-        attr_type   = data[pos]
-        attr_length = data[pos + 1]
-        attr_value  = data[pos + 2: pos + attr_length]
-        if attr_type == 18:  # Reply-Message
-            print(f"  Reply-Message: {attr_value.decode(errors='replace')}")
-        pos += attr_length
+        t, ln, val = data[pos], data[pos+1], data[pos+2:pos+data[pos+1]]
+        name = attr_names.get(t, f"Type-{t}")
+        if t == 4:    display = socket.inet_ntoa(val)
+        elif t == 2:  display = f"(encrypted) {val.hex()}"
+        elif t == 5:  display = str(int.from_bytes(val, "big"))
+        else:         display = val.decode("utf-8", errors="replace")
+        print(f"       [{t:3d}] {name:<25} len={ln:2d}  val={display}")
+        pos += ln
 
 
 if __name__ == "__main__":
-    SECRET = b"testing123"
-    packet = build_access_request("alice", "password123", SECRET)
+    authenticator = os.urandom(16)
+    def attr(t, v): return bytes([t, 2+len(v)]) + v
 
+    attrs  = attr(1,  b"alice")
+    attrs += attr(2,  encrypt_password("password123", SECRET, authenticator))
+    attrs += attr(4,  socket.inet_aton("127.0.0.1"))
+    attrs += attr(5,  (0).to_bytes(4, "big"))
+    attrs += attr(32, b"poc-nas")
+
+    pkt = struct.pack(">BBH16s", 1, 42, 20+len(attrs), authenticator) + attrs
+
+    print("="*60)
+    print("  OUTGOING Access-Request — wire bytes")
+    print("="*60)
+    hexdump(pkt); print(); annotate(pkt)
+
+    print("\n  Sending to FreeRADIUS...")
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(5)
-    sock.sendto(packet, ("127.0.0.1", 1812))
-    print("Sent Access-Request, waiting for reply...")
-
     try:
-        data, addr = sock.recvfrom(4096)
-        parse_response(data)
+        sock.sendto(pkt, (RADIUS_HOST, AUTH_PORT))
+        reply, addr = sock.recvfrom(4096)
+        print(f"\n{'='*60}")
+        print(f"  INCOMING response from {addr} — wire bytes")
+        print(f"{'='*60}")
+        hexdump(reply); print(); annotate(reply)
     except socket.timeout:
-        print("No response (timeout). Is FreeRADIUS running?")
+        print("  [!] Timeout — is FreeRADIUS running?  (docker compose up -d)")
     finally:
         sock.close()
 ```
