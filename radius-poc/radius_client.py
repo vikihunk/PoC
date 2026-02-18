@@ -186,8 +186,7 @@ def send_accounting(username: str, session_id: str, status: int = 1):
     print(f"  Accounting-Request ({ACCT_STATUS.get(status, status)})  →  user='{username}'")
     print(f"{'='*60}")
 
-    identifier    = random.getrandbits(8)
-    authenticator = os.urandom(16)
+    identifier = random.getrandbits(8)
 
     attrs  = encode_attr(ATTR["User-Name"],       username.encode())
     attrs += encode_attr(ATTR["NAS-Identifier"],  NAS_IDENTIFIER.encode())
@@ -196,6 +195,9 @@ def send_accounting(username: str, session_id: str, status: int = 1):
     attrs += encode_attr(ATTR["NAS-IP-Address"],  socket.inet_aton("127.0.0.1"))
 
     length = 20 + len(attrs)
+    # RFC 2866 §3: Request Authenticator = MD5(Code+ID+Length+16zeros+Attrs+Secret)
+    header_zero = struct.pack(">BBH16s", ACCT_REQUEST, identifier, length, b"\x00" * 16)
+    authenticator = hashlib.md5(header_zero + attrs + SHARED_SECRET).digest()
     header = struct.pack(">BBH16s", ACCT_REQUEST, identifier, length, authenticator)
     packet = header + attrs
 
