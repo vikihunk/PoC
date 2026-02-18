@@ -13,6 +13,7 @@ import socket
 import struct
 import hashlib
 import os
+import random
 import sys
 
 # ── Configuration ──────────────────────────────────────────────────────────────
@@ -136,7 +137,7 @@ def authenticate(username: str, password: str) -> str:
     print(f"  Access-Request  →  user='{username}'")
     print(f"{'='*60}")
 
-    identifier    = os.getrandbits(8)
+    identifier    = random.getrandbits(8)
     authenticator = os.urandom(16)
 
     # Build attributes
@@ -185,7 +186,7 @@ def send_accounting(username: str, session_id: str, status: int = 1):
     print(f"  Accounting-Request ({ACCT_STATUS.get(status, status)})  →  user='{username}'")
     print(f"{'='*60}")
 
-    identifier    = os.getrandbits(8)
+    identifier    = random.getrandbits(8)
     authenticator = os.urandom(16)
 
     attrs  = encode_attr(ATTR["User-Name"],       username.encode())

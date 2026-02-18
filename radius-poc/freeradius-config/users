@@ -1,17 +1,17 @@
 # FreeRADIUS users file
-# Format: username  Auth-Type := Local, Cleartext-Password := "pass"
-#         (indent)  reply attributes...
+# Format: username  Cleartext-Password := "pass"
+#         (TAB)     reply attributes...
 
-alice   Cleartext-Password := "password123"
-        Reply-Message = "Welcome, Alice!",
-        Framed-IP-Address = 10.0.0.10
+alice	Cleartext-Password := "password123"
+	Reply-Message = "Welcome, Alice!",
+	Framed-IP-Address = 10.0.0.10
 
-bob     Cleartext-Password := "bobsecret"
-        Reply-Message = "Welcome, Bob! VLAN 100 assigned.",
-        Tunnel-Type = VLAN,
-        Tunnel-Medium-Type = IEEE-802,
-        Tunnel-Private-Group-Id = "100"
+bob	Cleartext-Password := "bobsecret"
+	Reply-Message = "Welcome, Bob! VLAN 100 assigned.",
+	Tunnel-Type = VLAN,
+	Tunnel-Medium-Type = IEEE-802,
+	Tunnel-Private-Group-Id = "100"
 
-admin   Cleartext-Password := "admin@radius"
-        Reply-Message = "Welcome, Admin!",
-        Service-Type = Administrative-User
+admin	Cleartext-Password := "admin@radius"
+	Reply-Message = "Welcome, Admin!",
+	Service-Type = Administrative-User

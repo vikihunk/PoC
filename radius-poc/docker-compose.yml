@@ -2,12 +2,10 @@ services:
   freeradius:
     image: freeradius/freeradius-server:latest
     container_name: radius-poc
-    ports:
-      - "1812:1812/udp"   # Authentication
-      - "1813:1813/udp"   # Accounting
+    network_mode: host              # bind directly to host ports — avoids snap Docker UDP proxy issues
     volumes:
       # Override only the two files we care about
-      - ./freeradius-config/clients.conf:/etc/freeradius/3.0/clients.conf:ro
-      - ./freeradius-config/users:/etc/freeradius/3.0/mods-config/files/authorize:ro
+      - ./freeradius-config/clients.conf:/etc/freeradius/clients.conf:ro
+      - ./freeradius-config/users:/etc/freeradius/mods-config/files/authorize:ro
     command: freeradius -X          # debug/verbose mode — shows every packet
     restart: unless-stopped
