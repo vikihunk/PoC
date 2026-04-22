@@ -17,4 +17,4 @@ verify: verify-stage0 verify-uboot
 demo: prepare verify
 
 clean:
-	rm -rf artifacts efuse keys
+	rm -rf artifacts efuse keys runtime

@@ -6,7 +6,9 @@ KEY_DIR="${ROOT_DIR}/keys"
 EFUSE_DIR="${ROOT_DIR}/efuse"
 ARTIFACT_DIR="${ROOT_DIR}/artifacts"
 KERNEL_DIR="${ARTIFACT_DIR}/kernel"
+RUNTIME_DIR="${ROOT_DIR}/runtime"
 
+rm -rf "${RUNTIME_DIR}"
 mkdir -p "${KEY_DIR}" "${EFUSE_DIR}" "${ARTIFACT_DIR}" "${KERNEL_DIR}"
 
 openssl genpkey -algorithm EC \

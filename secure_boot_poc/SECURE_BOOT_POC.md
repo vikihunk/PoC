@@ -28,7 +28,8 @@ Stage 0 does not trust the public key file by itself. It:
 2. hashes the supplied root public key,
 3. rejects the boot if the hash does not match,
 4. verifies the signature on `artifacts/u-boot.bin`,
-5. transfers control to U-Boot only on success.
+5. copies the exact verified bytes into `runtime/stage0/u-boot.verified.bin`,
+6. transfers control to U-Boot only on success.
 
 This mirrors the real constraint that U-Boot cannot securely verify itself after execution has already started.
 
@@ -39,7 +40,8 @@ U-Boot is assumed to have been authenticated by stage 0. It then:
 1. verifies the signature on `artifacts/kernel/payload_manifest.json`,
 2. hashes each payload listed in the manifest,
 3. compares the computed hashes with the signed manifest values,
-4. rejects boot if any hash or signature check fails.
+4. copies the exact verified payload bytes into `runtime/uboot/`,
+5. rejects boot if any hash or signature check fails.
 
 This approximates a signed FIT image flow without requiring a real U-Boot build in this repository.
 
@@ -66,6 +68,13 @@ This approximates a signed FIT image flow without requiring a real U-Boot build 
 - `artifacts/kernel/initramfs.cpio`: simulated initramfs
 - `artifacts/kernel/payload_manifest.json`: signed manifest of payload hashes
 - `artifacts/kernel/payload_manifest.sig`: signature for the manifest
+
+### Verified Runtime Handoffs
+
+- `runtime/stage0/u-boot.verified.bin`: stage 0 verified U-Boot image
+- `runtime/stage0/handoff.json`: stage 0 hash record for the verified U-Boot handoff
+- `runtime/uboot/*`: verified kernel payload copies
+- `runtime/uboot/payloads.json`: U-Boot hash record for the verified payload handoff
 
 ## Why The eFuse Stores A Hash
 
@@ -95,12 +104,15 @@ This PoC stores a hash because it matches common ROM behavior and keeps stage 0 
 `make verify-stage0`:
 
 - authenticates `keys/root_pub.pem` against `efuse/root_pubkey.sha256`,
-- verifies `artifacts/u-boot.bin.sig`.
+- verifies `artifacts/u-boot.bin.sig`,
+- writes the verified U-Boot bytes to `runtime/stage0/`.
 
 `make verify-uboot`:
 
+- verifies that the stage 0 handoff record still matches `runtime/stage0/u-boot.verified.bin`,
 - verifies `artifacts/kernel/payload_manifest.sig`,
-- verifies the hashes of `Image`, `board.dtb`, and `initramfs.cpio`.
+- verifies the hashes of `Image`, `board.dtb`, and `initramfs.cpio`,
+- writes the verified payload bytes to `runtime/uboot/`.
 
 ## Limitations
 
@@ -108,6 +120,7 @@ This PoC stores a hash because it matches common ROM behavior and keeps stage 0 
 - No hardware anti-rollback or monotonic versioning is modeled.
 - No TPM, TrustZone, or secure storage backend is modeled.
 - Signature verification is delegated to `openssl`, not an in-boot crypto library.
+- The runtime handoff directories are only a software separation between mutable storage and verified execution inputs.
 
 ## Path To A Real Implementation
 
