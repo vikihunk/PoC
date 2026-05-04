@@ -1,0 +1,5 @@
+{
+  "source_path": "artifacts/u-boot.bin",
+  "verified_path": "runtime/stage0/u-boot.verified.bin",
+  "sha256": "6efa7c0028bdf3b3bb55054aac528930900cc7fa4a6dc3d34e0c62d90a822351"
+}

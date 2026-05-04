@@ -1,0 +1,3 @@
+SIMULATED LINUX KERNEL IMAGE
+version=6.12-poc
+cmdline=console=ttyAMA0 root=/dev/vda

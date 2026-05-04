@@ -1,0 +1,22 @@
+{
+  "payloads": [
+    {
+      "name": "Image",
+      "source_path": "artifacts/kernel/Image",
+      "verified_path": "runtime/uboot/Image",
+      "sha256": "538215db4558779f7fd4e3f285e0c97d5a443616ee2dada2c7ea027cb0125af1"
+    },
+    {
+      "name": "board.dtb",
+      "source_path": "artifacts/kernel/board.dtb",
+      "verified_path": "runtime/uboot/board.dtb",
+      "sha256": "23de4e59dd8fa031d3b6a6298818c80970248f43e56643c7d7916b6c7fc3d604"
+    },
+    {
+      "name": "initramfs.cpio",
+      "source_path": "artifacts/kernel/initramfs.cpio",
+      "verified_path": "runtime/uboot/initramfs.cpio",
+      "sha256": "5112730ed00f407063efc456f59c519d111790be3ec4baf816fb1c7f0a71d54f"
+    }
+  ]
+}

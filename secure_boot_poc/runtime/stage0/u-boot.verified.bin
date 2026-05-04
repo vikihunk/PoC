@@ -1,0 +1,4 @@
+SIMULATED U-BOOT
+build-id=secure-boot-poc
+board=qemu-virt
+purpose=stage1-verification
